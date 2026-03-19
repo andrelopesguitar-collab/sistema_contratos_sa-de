@@ -1,32 +1,13 @@
 // =============================================
-// ContratosPro v2.0 — Firebase Firestore
+// ContratosPro v2.1 — Firebase CDN
 // =============================================
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import {
-  getFirestore, collection, getDocs, addDoc, updateDoc,
-  deleteDoc, doc, onSnapshot, serverTimestamp, orderBy, query
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+'use strict';
 
-// ─── CONFIGURAÇÃO FIREBASE ───────────────────
-const firebaseConfig = {
-  apiKey: "AIzaSyBPB3mRsKjiLxP9v_090y8mrD3tBL7aVw0",
-  authDomain: "sistema-contratos-dd057.firebaseapp.com",
-  projectId: "sistema-contratos-dd057",
-  storageBucket: "sistema-contratos-dd057.firebasestorage.app",
-  messagingSenderId: "950566474906",
-  appId: "1:950566474906:web:9819c5ab34f7dbe1f3bb23"
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-
-// ─── Constants ───────────────────────────────
 const MONTHS = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 const MONTH_NAMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const PAGE_SIZE = 15;
 
-// ─── State ───────────────────────────────────
 let contracts = [];
 let filtered = [];
 let currentPage = 1;
@@ -34,8 +15,8 @@ let editingId = null;
 let deleteId = null;
 let pendingImport = null;
 let charts = {};
+let db = null;
 
-// ─── Utility ─────────────────────────────────
 const $ = id => document.getElementById(id);
 const val = id => ($(id) ? $(id).value.trim() : '');
 const num = v => (isNaN(parseFloat(v)) || v === '' || v === null || v === undefined ? 0 : parseFloat(v));
@@ -54,60 +35,71 @@ function toast(msg, type = 'info') {
 }
 
 function setSync(status) {
-  const dot = $('syncDot');
-  const text = $('syncText');
+  const dot = $('syncDot'), text = $('syncText');
+  if (!dot || !text) return;
   if (status === 'online') { dot.className = 'sync-dot online'; text.textContent = 'Sincronizado'; }
   else if (status === 'saving') { dot.className = 'sync-dot saving'; text.textContent = 'Salvando...'; }
   else { dot.className = 'sync-dot offline'; text.textContent = 'Sem conexão'; }
 }
 
-// ─── Computed totals ──────────────────────────
 function calcTotals(c) {
   let totPrev = 0, totPago = 0, totGlosa = 0;
   MONTHS.forEach(m => {
     const mes = c.meses?.[m] || {};
-    totPrev += num(mes.prev);
-    totPago += num(mes.pago);
-    totGlosa += num(mes.glosa);
+    totPrev += num(mes.prev); totPago += num(mes.pago); totGlosa += num(mes.glosa);
   });
   const saldo = num(c.valor_total) > 0 ? num(c.valor_total) - totPago : totPrev - totPago;
   return { totPrev, totPago, totGlosa, saldo };
 }
 
-// ─── Firebase: Listener em tempo real ────────
-function startRealtimeSync() {
-  const q = query(collection(db, 'contratos'), orderBy('createdAt', 'desc'));
-  onSnapshot(q, (snapshot) => {
-    contracts = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    setSync('online');
-    $('loadingOverlay').style.display = 'none';
+// ─── Firebase Init ────────────────────────────
+function initFirebase() {
+  const firebaseConfig = {
+    apiKey: "AIzaSyBPB3mRsKjiLxP9v_090y8mrD3tBL7aVw0",
+    authDomain: "sistema-contratos-dd057.firebaseapp.com",
+    projectId: "sistema-contratos-dd057",
+    storageBucket: "sistema-contratos-dd057.firebasestorage.app",
+    messagingSenderId: "950566474906",
+    appId: "1:950566474906:web:9819c5ab34f7dbe1f3bb23"
+  };
 
-    // Atualiza a página ativa
-    const activePage = document.querySelector('.page.active');
-    if (activePage?.id === 'page-dashboard') renderDashboard();
-    if (activePage?.id === 'page-contracts') { filtered = [...contracts]; renderContracts(); }
-  }, (error) => {
-    console.error(error);
-    setSync('offline');
-    $('loadingOverlay').style.display = 'none';
-    toast('Erro de conexão com o banco de dados.', 'error');
-  });
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+
+  db.collection('contratos')
+    .orderBy('createdAt', 'desc')
+    .onSnapshot(snapshot => {
+      contracts = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setSync('online');
+      $('loadingOverlay').style.display = 'none';
+
+      const activePage = document.querySelector('.page.active');
+      if (activePage?.id === 'page-dashboard') renderDashboard();
+      if (activePage?.id === 'page-contracts') { filtered = [...contracts]; renderContracts(); }
+    }, err => {
+      console.error('Firestore error:', err);
+      setSync('offline');
+      $('loadingOverlay').style.display = 'none';
+      toast('Erro de conexão: ' + err.message, 'error');
+    });
 }
 
 async function saveToFirebase(data) {
   setSync('saving');
   try {
+    const payload = { ...data, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
     if (editingId) {
-      await updateDoc(doc(db, 'contratos', editingId), { ...data, updatedAt: serverTimestamp() });
+      await db.collection('contratos').doc(editingId).update(payload);
     } else {
-      await addDoc(collection(db, 'contratos'), { ...data, createdAt: serverTimestamp() });
+      payload.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+      await db.collection('contratos').add(payload);
     }
     setSync('online');
     return true;
   } catch (e) {
     console.error(e);
     setSync('offline');
-    toast('Erro ao salvar. Verifique a conexão.', 'error');
+    toast('Erro ao salvar: ' + e.message, 'error');
     return false;
   }
 }
@@ -115,7 +107,7 @@ async function saveToFirebase(data) {
 async function deleteFromFirebase(id) {
   setSync('saving');
   try {
-    await deleteDoc(doc(db, 'contratos', id));
+    await db.collection('contratos').doc(id).delete();
     setSync('online');
     return true;
   } catch (e) {
@@ -133,10 +125,8 @@ function navigate(page) {
   if (el) el.classList.add('active');
   const nav = document.querySelector(`[data-page="${page}"]`);
   if (nav) nav.classList.add('active');
-
   const titles = { dashboard: 'Painel', contracts: 'Contratos', 'new-contract': editingId ? 'Editar Contrato' : 'Novo Contrato', reports: 'Relatórios', import: 'Importar Dados' };
   $('pageTitle').textContent = titles[page] || page;
-
   if (window.innerWidth <= 900) $('sidebar').classList.remove('open');
   if (page === 'dashboard') renderDashboard();
   if (page === 'contracts') { filtered = [...contracts]; renderContracts(); }
@@ -156,9 +146,7 @@ function renderDashboard() {
     <div class="kpi-card yellow"><div class="kpi-label">Saldo Disponível</div><div class="kpi-value">${fmtBRL(totalSaldo)}</div><div class="kpi-sub">Previsto - Pago</div></div>
     <div class="kpi-card purple"><div class="kpi-label">Contratos Ativos</div><div class="kpi-value">${contracts.length}</div><div class="kpi-sub">cadastros no sistema</div></div>
   `;
-
   renderCharts();
-
   const tbody = document.querySelector('#recentTable tbody');
   tbody.innerHTML = [...contracts].slice(0, 8).map(c => {
     const t = calcTotals(c);
@@ -167,36 +155,24 @@ function renderDashboard() {
 }
 
 function renderCharts() {
-  Object.values(charts).forEach(c => c?.destroy());
-  charts = {};
-
+  Object.values(charts).forEach(c => c?.destroy()); charts = {};
   const fonteTotals = {};
   contracts.forEach(c => { const t = calcTotals(c); fonteTotals[c.fonte] = (fonteTotals[c.fonte] || 0) + t.totPago; });
-
   charts.fonte = new Chart($('chartFonte').getContext('2d'), {
     type: 'doughnut',
     data: { labels: Object.keys(fonteTotals).map(f => f.charAt(0).toUpperCase() + f.slice(1)), datasets: [{ data: Object.values(fonteTotals), backgroundColor: ['#4f8eff','#34d399','#fbbf24','#a78bfa'], borderWidth: 0, hoverOffset: 6 }] },
     options: { responsive: true, plugins: { legend: { labels: { color: '#8a90a2', font: { size: 11 } } }, tooltip: { callbacks: { label: ctx => ' R$ ' + fmt(ctx.parsed) } } } }
   });
-
   const grouped = {};
-  contracts.forEach(c => {
-    const key = `${c.contrato} - ${c.os}`;
-    if (!grouped[key]) grouped[key] = { prev: 0, pago: 0 };
-    const t = calcTotals(c); grouped[key].prev += t.totPrev; grouped[key].pago += t.totPago;
-  });
-  const labels = Object.keys(grouped).map(k => k.length > 20 ? k.slice(0,20)+'…' : k);
-  const prevData = Object.values(grouped).map(v => v.prev);
-  const pagoData = Object.values(grouped).map(v => v.pago);
-
+  contracts.forEach(c => { const key = `${c.contrato} - ${c.os}`; if (!grouped[key]) grouped[key] = { prev: 0, pago: 0 }; const t = calcTotals(c); grouped[key].prev += t.totPrev; grouped[key].pago += t.totPago; });
   charts.contratos = new Chart($('chartContratos').getContext('2d'), {
     type: 'bar',
-    data: { labels, datasets: [{ label: 'Previsto', data: prevData, backgroundColor: 'rgba(79,142,255,0.5)', borderColor: '#4f8eff', borderWidth: 1 }, { label: 'Pago', data: pagoData, backgroundColor: 'rgba(52,211,153,0.5)', borderColor: '#34d399', borderWidth: 1 }] },
-    options: { responsive: true, plugins: { legend: { labels: { color: '#8a90a2', font: { size: 11 } } }, tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: R$ ${fmt(ctx.parsed.y)}` } } }, scales: { x: { ticks: { color: '#5a6070', font: { size: 10 } }, grid: { color: '#252a38' } }, y: { ticks: { color: '#5a6070', font: { size: 10 }, callback: v => 'R$' + fmt(v/1000) + 'k' }, grid: { color: '#252a38' } } } }
+    data: { labels: Object.keys(grouped).map(k => k.length > 20 ? k.slice(0,20)+'…' : k), datasets: [{ label: 'Previsto', data: Object.values(grouped).map(v => v.prev), backgroundColor: 'rgba(79,142,255,0.5)', borderColor: '#4f8eff', borderWidth: 1 }, { label: 'Pago', data: Object.values(grouped).map(v => v.pago), backgroundColor: 'rgba(52,211,153,0.5)', borderColor: '#34d399', borderWidth: 1 }] },
+    options: { responsive: true, plugins: { legend: { labels: { color: '#8a90a2', font: { size: 11 } } }, tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: R$ ${fmt(ctx.parsed.y)}` } } }, scales: { x: { ticks: { color: '#5a6070', font: { size: 10 } }, grid: { color: '#252a38' } }, y: { ticks: { color: '#5a6070', callback: v => 'R$' + fmt(v/1000) + 'k' }, grid: { color: '#252a38' } } } }
   });
 }
 
-// ─── CONTRACTS LIST ───────────────────────────
+// ─── CONTRACTS ───────────────────────────────
 function renderContracts() {
   currentPage = 1; renderTable();
   $('resultCount').textContent = `${filtered.length} contrato(s) encontrado(s)`;
@@ -206,26 +182,11 @@ function renderTable() {
   const start = (currentPage - 1) * PAGE_SIZE;
   const pageData = filtered.slice(start, start + PAGE_SIZE);
   const tbody = $('contractsBody');
-
   if (!pageData.length) { tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--text3);">Nenhum contrato encontrado.</td></tr>'; $('pagination').innerHTML = ''; return; }
-
   tbody.innerHTML = pageData.map(c => {
     const t = calcTotals(c);
-    return `<tr>
-      <td class="td-mono">${c.contrato}</td><td>${c.os}</td><td>${c.unidade}</td><td>${c.ano}</td>
-      <td><span class="td-badge badge-${c.fonte}">${c.fonte}</span></td>
-      <td class="val-mono">${c.valor_total ? fmtBRL(c.valor_total) : '—'}</td>
-      <td class="val-mono">${fmtBRL(t.totPrev)}</td><td class="val-pos">${fmtBRL(t.totPago)}</td>
-      <td class="val-neg">${fmtBRL(t.totGlosa)}</td>
-      <td class="${t.saldo >= 0 ? 'val-pos' : 'val-neg'}">${fmtBRL(t.saldo)}</td>
-      <td>
-        <button class="action-btn" onclick="viewContract('${c.id}')">👁</button>
-        <button class="action-btn" onclick="startEdit('${c.id}')">✏</button>
-        <button class="action-btn danger" onclick="startDelete('${c.id}')">🗑</button>
-      </td>
-    </tr>`;
+    return `<tr><td class="td-mono">${c.contrato}</td><td>${c.os}</td><td>${c.unidade}</td><td>${c.ano}</td><td><span class="td-badge badge-${c.fonte}">${c.fonte}</span></td><td class="val-mono">${c.valor_total ? fmtBRL(c.valor_total) : '—'}</td><td class="val-mono">${fmtBRL(t.totPrev)}</td><td class="val-pos">${fmtBRL(t.totPago)}</td><td class="val-neg">${fmtBRL(t.totGlosa)}</td><td class="${t.saldo >= 0 ? 'val-pos' : 'val-neg'}">${fmtBRL(t.saldo)}</td><td><button class="action-btn" onclick="viewContract('${c.id}')">👁</button><button class="action-btn" onclick="startEdit('${c.id}')">✏</button><button class="action-btn danger" onclick="startDelete('${c.id}')">🗑</button></td></tr>`;
   }).join('');
-
   renderPagination();
 }
 
@@ -267,14 +228,9 @@ function renderForm() {
   const c = editingId ? contracts.find(x => x.id === editingId) : null;
   if (c) { $('fContrato').value = c.contrato; $('fOS').value = c.os; $('fUnidade').value = c.unidade; $('fAno').value = c.ano; $('fFonte').value = c.fonte; $('fValorTotal').value = c.valor_total || ''; $('fObs').value = c.obs || ''; }
   else { ['fContrato','fOS','fUnidade','fFonte','fValorTotal','fObs'].forEach(id => { if ($(id)) $(id).value = ''; }); $('fAno').value = new Date().getFullYear(); }
-
   $('monthlyBody').innerHTML = MONTHS.map((m, i) => {
     const mes = c?.meses?.[m] || {};
-    return `<tr><td>${MONTH_NAMES[i]}</td>
-      <td><input type="number" id="m_${m}_prev" step="0.01" min="0" value="${mes.prev||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td>
-      <td><input type="number" id="m_${m}_pago" step="0.01" min="0" value="${mes.pago||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td>
-      <td><input type="number" id="m_${m}_glosa" step="0.01" min="0" value="${mes.glosa||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td>
-    </tr>`;
+    return `<tr><td>${MONTH_NAMES[i]}</td><td><input type="number" id="m_${m}_prev" step="0.01" min="0" value="${mes.prev||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td><td><input type="number" id="m_${m}_pago" step="0.01" min="0" value="${mes.pago||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td><td><input type="number" id="m_${m}_glosa" step="0.01" min="0" value="${mes.glosa||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td></tr>`;
   }).join('');
   calcMonthlyTotal();
 }
@@ -288,24 +244,14 @@ function calcMonthlyTotal() {
 async function saveContract() {
   const contrato = val('fContrato'), os = val('fOS'), unidade = val('fUnidade'), fonte = val('fFonte');
   const ano = parseInt(val('fAno')) || new Date().getFullYear();
-  if (!contrato || !os || !unidade || !fonte) { toast('Preencha os campos obrigatórios: Nº Contrato, Empresa, Unidade e Fonte.', 'error'); return; }
-
+  if (!contrato || !os || !unidade || !fonte) { toast('Preencha os campos obrigatórios!', 'error'); return; }
   const meses = {};
   MONTHS.forEach(m => { meses[m] = { prev: num($(`m_${m}_prev`)?.value), pago: num($(`m_${m}_pago`)?.value), glosa: num($(`m_${m}_glosa`)?.value) }; });
-
   const $btn = $('saveBtn');
   $btn.disabled = true; $btn.textContent = 'Salvando...';
-
-  const data = { contrato, os, unidade, ano, fonte, valor_total: num($('fValorTotal').value) || null, obs: val('fObs'), meses };
-  const ok = await saveToFirebase(data);
-
+  const ok = await saveToFirebase({ contrato, os, unidade, ano, fonte, valor_total: num($('fValorTotal').value) || null, obs: val('fObs'), meses });
   $btn.disabled = false; $btn.textContent = '💾 Salvar Contrato';
-
-  if (ok) {
-    toast(editingId ? 'Contrato atualizado!' : 'Contrato cadastrado!', 'success');
-    editingId = null;
-    navigate('contracts');
-  }
+  if (ok) { toast(editingId ? 'Contrato atualizado!' : 'Contrato cadastrado!', 'success'); editingId = null; navigate('contracts'); }
 }
 
 function cancelForm() { editingId = null; navigate('contracts'); }
@@ -313,16 +259,10 @@ function startEdit(id) { editingId = id; navigate('new-contract'); }
 
 // ─── VIEW ─────────────────────────────────────
 function viewContract(id) {
-  const c = contracts.find(x => x.id === id);
-  if (!c) return;
+  const c = contracts.find(x => x.id === id); if (!c) return;
   const t = calcTotals(c);
   $('viewModalTitle').textContent = `Contrato ${c.contrato} — ${c.os}`;
-  const monthRows = MONTHS.map((m, i) => {
-    const mes = c.meses?.[m] || {};
-    if (!mes.prev && !mes.pago && !mes.glosa) return '';
-    return `<tr><td>${MONTH_NAMES[i]}</td><td class="val-mono">${fmtBRL(mes.prev)}</td><td class="val-pos">${fmtBRL(mes.pago)}</td><td class="val-neg">${fmtBRL(mes.glosa)}</td></tr>`;
-  }).join('');
-
+  const monthRows = MONTHS.map((m, i) => { const mes = c.meses?.[m] || {}; if (!mes.prev && !mes.pago && !mes.glosa) return ''; return `<tr><td>${MONTH_NAMES[i]}</td><td class="val-mono">${fmtBRL(mes.prev)}</td><td class="val-pos">${fmtBRL(mes.pago)}</td><td class="val-neg">${fmtBRL(mes.glosa)}</td></tr>`; }).join('');
   $('viewModalBody').innerHTML = `
     <div class="detail-grid">
       <div class="detail-item"><label>Nº Contrato</label><span>${c.contrato}</span></div>
@@ -339,12 +279,7 @@ function viewContract(id) {
       <div class="kpi-card red"><div class="kpi-label">Total Glosa</div><div class="kpi-value" style="font-size:1rem;">${fmtBRL(t.totGlosa)}</div></div>
     </div>
     <div class="form-section-title">Execução Mensal</div>
-    <div class="table-wrap">
-      <table><thead><tr><th>Mês</th><th>Previsto</th><th>Pago</th><th>Glosa</th></tr></thead>
-      <tbody>${monthRows || '<tr><td colspan="4" style="text-align:center;color:var(--text3)">Sem execução registrada.</td></tr>'}</tbody>
-      <tfoot><tr class="total-row"><td><strong>TOTAL</strong></td><td class="val-mono"><strong>${fmtBRL(t.totPrev)}</strong></td><td class="val-pos"><strong>${fmtBRL(t.totPago)}</strong></td><td class="val-neg"><strong>${fmtBRL(t.totGlosa)}</strong></td></tr></tfoot>
-      </table>
-    </div>
+    <div class="table-wrap"><table><thead><tr><th>Mês</th><th>Previsto</th><th>Pago</th><th>Glosa</th></tr></thead><tbody>${monthRows || '<tr><td colspan="4" style="text-align:center;color:var(--text3)">Sem execução registrada.</td></tr>'}</tbody><tfoot><tr class="total-row"><td><strong>TOTAL</strong></td><td class="val-mono"><strong>${fmtBRL(t.totPrev)}</strong></td><td class="val-pos"><strong>${fmtBRL(t.totPago)}</strong></td><td class="val-neg"><strong>${fmtBRL(t.totGlosa)}</strong></td></tr></tfoot></table></div>
     ${c.obs ? `<div class="form-section-title" style="margin-top:1.5rem;">Observações</div><p style="color:var(--text2);font-size:0.875rem;line-height:1.7;">${c.obs}</p>` : ''}
   `;
   $('viewModal').style.display = 'flex';
@@ -356,11 +291,8 @@ function printContract() { window.print(); }
 
 // ─── DELETE ───────────────────────────────────
 function startDelete(id) {
-  const c = contracts.find(x => x.id === id);
-  if (!c) return;
-  deleteId = id;
-  $('deleteContractName').textContent = `${c.contrato} — ${c.os}`;
-  $('deleteModal').style.display = 'flex';
+  const c = contracts.find(x => x.id === id); if (!c) return;
+  deleteId = id; $('deleteContractName').textContent = `${c.contrato} — ${c.os}`; $('deleteModal').style.display = 'flex';
 }
 
 async function confirmDelete() {
@@ -370,14 +302,11 @@ async function confirmDelete() {
 
 function closeModal(id) { $(id).style.display = 'none'; }
 
-// ─── EXPORT CSV ──────────────────────────────
+// ─── EXPORT ──────────────────────────────────
 function exportCSV() {
   const data = filtered.length ? filtered : contracts;
   const headers = ['contrato','os','unidade','ano','fonte','valor_total', ...MONTHS.flatMap(m => [`${m}_prev`,`${m}_pago`,`${m}_glosa`]), 'total_previsto','total_pago','total_glosa','saldo','obs'];
-  const rows = data.map(c => {
-    const t = calcTotals(c);
-    return [c.contrato, c.os, c.unidade, c.ano, c.fonte, c.valor_total||'', ...MONTHS.flatMap(m => { const mes = c.meses?.[m]||{}; return [mes.prev||0, mes.pago||0, mes.glosa||0]; }), t.totPrev, t.totPago, t.totGlosa, t.saldo, c.obs||''].map(v => `"${String(v).replace(/"/g,'""')}"`).join(',');
-  });
+  const rows = data.map(c => { const t = calcTotals(c); return [c.contrato, c.os, c.unidade, c.ano, c.fonte, c.valor_total||'', ...MONTHS.flatMap(m => { const mes = c.meses?.[m]||{}; return [mes.prev||0, mes.pago||0, mes.glosa||0]; }), t.totPrev, t.totPago, t.totGlosa, t.saldo, c.obs||''].map(v => `"${String(v).replace(/"/g,'""')}"`).join(','); });
   downloadFile([headers.join(','), ...rows].join('\n'), 'contratos.csv', 'text/csv');
   toast('CSV exportado!', 'success');
 }
@@ -431,19 +360,17 @@ async function confirmImport() {
   if (!pendingImport) return;
   toast('Importando...', 'info');
   for (const c of pendingImport) {
-    await addDoc(collection(db, 'contratos'), { ...c, createdAt: serverTimestamp() });
+    await db.collection('contratos').add({ ...c, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
   }
-  pendingImport = null;
-  $('importPreview').style.display = 'none';
-  $('importFile').value = '';
+  pendingImport = null; $('importPreview').style.display = 'none'; $('importFile').value = '';
   toast('Importação concluída!', 'success');
 }
 
 function cancelImport() { pendingImport = null; $('importPreview').style.display = 'none'; $('importFile').value = ''; }
 
 async function clearAllData() {
-  if (!confirm('Tem certeza? Todos os contratos serão excluídos permanentemente do banco de dados!')) return;
-  for (const c of contracts) { await deleteDoc(doc(db, 'contratos', c.id)); }
+  if (!confirm('Tem certeza? Todos os contratos serão excluídos permanentemente!')) return;
+  for (const c of contracts) { await db.collection('contratos').doc(c.id).delete(); }
   toast('Todos os dados foram removidos.', 'error');
 }
 
@@ -465,33 +392,21 @@ function generateReport() {
   if (tipo === 'contrato' || tipo === 'geral') {
     const extraCol = tipo === 'geral';
     $('reportHead').innerHTML = `<tr><th>Contrato</th>${extraCol ? '<th>Fonte</th>' : ''}<th>Previsto</th><th>Pago</th><th>Glosa</th><th>Saldo</th></tr>`;
-    $('reportBody').innerHTML = data.map(c => {
-      let prev = 0, pago = 0, glosa = 0;
-      activeMths.forEach(m => { prev += num(c.meses?.[m]?.prev); pago += num(c.meses?.[m]?.pago); glosa += num(c.meses?.[m]?.glosa); });
-      const saldo = prev - pago; totals.prev += prev; totals.pago += pago; totals.glosa += glosa; totals.saldo += saldo;
-      return `<tr><td>${c.contrato} — ${c.os} / ${c.unidade}</td>${extraCol ? `<td><span class="td-badge badge-${c.fonte}">${c.fonte}</span></td>` : ''}<td class="val-mono">${fmtBRL(prev)}</td><td class="val-pos">${fmtBRL(pago)}</td><td class="val-neg">${fmtBRL(glosa)}</td><td class="${saldo>=0?'val-pos':'val-neg'}">${fmtBRL(saldo)}</td></tr>`;
-    }).join('');
-    $('reportFoot').innerHTML = `<tr class="total-row"><td ${extraCol ? 'colspan="2"' : ''}><strong>TOTAL</strong></td><td class="val-mono"><strong>${fmtBRL(totals.prev)}</strong></td><td class="val-pos"><strong>${fmtBRL(totals.pago)}</strong></td><td class="val-neg"><strong>${fmtBRL(totals.glosa)}</strong></td><td><strong>${fmtBRL(totals.saldo)}</strong></td></tr>`;
-
+    $('reportBody').innerHTML = data.map(c => { let prev = 0, pago = 0, glosa = 0; activeMths.forEach(m => { prev += num(c.meses?.[m]?.prev); pago += num(c.meses?.[m]?.pago); glosa += num(c.meses?.[m]?.glosa); }); const saldo = prev-pago; totals.prev+=prev; totals.pago+=pago; totals.glosa+=glosa; totals.saldo+=saldo; return `<tr><td>${c.contrato} — ${c.os} / ${c.unidade}</td>${extraCol ? `<td><span class="td-badge badge-${c.fonte}">${c.fonte}</span></td>` : ''}<td class="val-mono">${fmtBRL(prev)}</td><td class="val-pos">${fmtBRL(pago)}</td><td class="val-neg">${fmtBRL(glosa)}</td><td class="${saldo>=0?'val-pos':'val-neg'}">${fmtBRL(saldo)}</td></tr>`; }).join('');
+    $('reportFoot').innerHTML = `<tr class="total-row"><td ${extraCol?'colspan="2"':''}><strong>TOTAL</strong></td><td class="val-mono"><strong>${fmtBRL(totals.prev)}</strong></td><td class="val-pos"><strong>${fmtBRL(totals.pago)}</strong></td><td class="val-neg"><strong>${fmtBRL(totals.glosa)}</strong></td><td><strong>${fmtBRL(totals.saldo)}</strong></td></tr>`;
   } else if (tipo === 'periodo') {
     $('reportHead').innerHTML = '<tr><th>Mês</th><th>Previsto</th><th>Pago</th><th>Glosa</th><th>Saldo</th></tr>';
-    $('reportBody').innerHTML = activeMths.map((m, i) => {
-      let prev = 0, pago = 0, glosa = 0;
-      data.forEach(c => { prev += num(c.meses?.[m]?.prev); pago += num(c.meses?.[m]?.pago); glosa += num(c.meses?.[m]?.glosa); });
-      const saldo = prev - pago; totals.prev += prev; totals.pago += pago; totals.glosa += glosa; totals.saldo += saldo;
-      return `<tr><td>${MONTH_NAMES[MONTHS.indexOf(m)]}</td><td class="val-mono">${fmtBRL(prev)}</td><td class="val-pos">${fmtBRL(pago)}</td><td class="val-neg">${fmtBRL(glosa)}</td><td class="${saldo>=0?'val-pos':'val-neg'}">${fmtBRL(saldo)}</td></tr>`;
-    }).join('');
+    $('reportBody').innerHTML = activeMths.map(m => { let prev=0,pago=0,glosa=0; data.forEach(c=>{prev+=num(c.meses?.[m]?.prev);pago+=num(c.meses?.[m]?.pago);glosa+=num(c.meses?.[m]?.glosa);}); const saldo=prev-pago; totals.prev+=prev;totals.pago+=pago;totals.glosa+=glosa;totals.saldo+=saldo; return `<tr><td>${MONTH_NAMES[MONTHS.indexOf(m)]}</td><td class="val-mono">${fmtBRL(prev)}</td><td class="val-pos">${fmtBRL(pago)}</td><td class="val-neg">${fmtBRL(glosa)}</td><td class="${saldo>=0?'val-pos':'val-neg'}">${fmtBRL(saldo)}</td></tr>`; }).join('');
     $('reportFoot').innerHTML = `<tr class="total-row"><td><strong>TOTAL</strong></td><td class="val-mono"><strong>${fmtBRL(totals.prev)}</strong></td><td class="val-pos"><strong>${fmtBRL(totals.pago)}</strong></td><td class="val-neg"><strong>${fmtBRL(totals.glosa)}</strong></td><td><strong>${fmtBRL(totals.saldo)}</strong></td></tr>`;
-
   } else if (tipo === 'fonte') {
     const fonteMap = {};
-    data.forEach(c => { if (!fonteMap[c.fonte]) fonteMap[c.fonte] = { prev:0, pago:0, glosa:0 }; activeMths.forEach(m => { fonteMap[c.fonte].prev += num(c.meses?.[m]?.prev); fonteMap[c.fonte].pago += num(c.meses?.[m]?.pago); fonteMap[c.fonte].glosa += num(c.meses?.[m]?.glosa); }); });
+    data.forEach(c=>{if(!fonteMap[c.fonte])fonteMap[c.fonte]={prev:0,pago:0,glosa:0};activeMths.forEach(m=>{fonteMap[c.fonte].prev+=num(c.meses?.[m]?.prev);fonteMap[c.fonte].pago+=num(c.meses?.[m]?.pago);fonteMap[c.fonte].glosa+=num(c.meses?.[m]?.glosa);});});
     $('reportHead').innerHTML = '<tr><th>Fonte</th><th>Previsto</th><th>Pago</th><th>Glosa</th><th>Saldo</th></tr>';
-    $('reportBody').innerHTML = Object.entries(fonteMap).map(([f, v]) => { const saldo = v.prev-v.pago; totals.prev+=v.prev; totals.pago+=v.pago; totals.glosa+=v.glosa; totals.saldo+=saldo; return `<tr><td><span class="td-badge badge-${f}">${f}</span></td><td class="val-mono">${fmtBRL(v.prev)}</td><td class="val-pos">${fmtBRL(v.pago)}</td><td class="val-neg">${fmtBRL(v.glosa)}</td><td class="${saldo>=0?'val-pos':'val-neg'}">${fmtBRL(saldo)}</td></tr>`; }).join('');
+    $('reportBody').innerHTML = Object.entries(fonteMap).map(([f,v])=>{const saldo=v.prev-v.pago;totals.prev+=v.prev;totals.pago+=v.pago;totals.glosa+=v.glosa;totals.saldo+=saldo;return `<tr><td><span class="td-badge badge-${f}">${f}</span></td><td class="val-mono">${fmtBRL(v.prev)}</td><td class="val-pos">${fmtBRL(v.pago)}</td><td class="val-neg">${fmtBRL(v.glosa)}</td><td class="${saldo>=0?'val-pos':'val-neg'}">${fmtBRL(saldo)}</td></tr>`;}).join('');
     $('reportFoot').innerHTML = `<tr class="total-row"><td><strong>TOTAL</strong></td><td class="val-mono"><strong>${fmtBRL(totals.prev)}</strong></td><td class="val-pos"><strong>${fmtBRL(totals.pago)}</strong></td><td class="val-neg"><strong>${fmtBRL(totals.glosa)}</strong></td><td><strong>${fmtBRL(totals.saldo)}</strong></td></tr>`;
   }
 
-  const tipoLabel = { contrato: 'Por Contrato', periodo: 'Por Período', fonte: 'Por Fonte', geral: 'Geral Consolidado' };
+  const tipoLabel = { contrato:'Por Contrato', periodo:'Por Período', fonte:'Por Fonte', geral:'Geral Consolidado' };
   $('reportTitle').textContent = `Relatório ${tipoLabel[tipo]}`;
   $('reportDate').textContent = `Gerado em ${today()}`;
   $('reportKpis').innerHTML = `
@@ -513,14 +428,12 @@ function exportReportCSV() {
 
 // ─── INIT ─────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  startRealtimeSync();
+  initFirebase();
 
   document.querySelectorAll('.nav-item').forEach(el => {
     el.addEventListener('click', e => { e.preventDefault(); if (el.dataset.page === 'new-contract') editingId = null; navigate(el.dataset.page); });
   });
-
   $('menuToggle').addEventListener('click', () => $('sidebar').classList.toggle('open'));
-
   document.querySelectorAll('.modal-overlay').forEach(el => { el.addEventListener('click', e => { if (e.target === el) el.style.display = 'none'; }); });
 
   const zone = $('importZone');
@@ -529,31 +442,5 @@ document.addEventListener('DOMContentLoaded', () => {
     zone.addEventListener('dragleave', () => { zone.style.borderColor = ''; });
     zone.addEventListener('drop', e => { e.preventDefault(); zone.style.borderColor = ''; const file = e.dataTransfer.files[0]; if (file) handleImport({ target: { files: [file] } }); });
   }
-
   navigate('dashboard');
 });
-
-// Expose functions to window for inline onclick handlers
-window.navigate = navigate;
-window.searchContracts = searchContracts;
-window.clearSearch = clearSearch;
-window.exportCSV = exportCSV;
-window.viewContract = viewContract;
-window.startEdit = startEdit;
-window.startDelete = startDelete;
-window.goPage = goPage;
-window.saveContract = saveContract;
-window.cancelForm = cancelForm;
-window.calcMonthlyTotal = calcMonthlyTotal;
-window.closeModal = closeModal;
-window.editFromView = editFromView;
-window.printContract = printContract;
-window.confirmDelete = confirmDelete;
-window.generateReport = generateReport;
-window.printReport = printReport;
-window.exportReportCSV = exportReportCSV;
-window.handleImport = handleImport;
-window.confirmImport = confirmImport;
-window.cancelImport = cancelImport;
-window.downloadTemplate = downloadTemplate;
-window.clearAllData = clearAllData;
