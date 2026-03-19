@@ -1,5 +1,5 @@
 // =============================================
-// ContratosPro v2.2 — Firebase CDN + Glosa Auto
+// ContratosPro v2.3 — Glosa Auto + Formato BR
 // =============================================
 
 'use strict';
@@ -19,7 +19,24 @@ let db = null;
 
 const $ = id => document.getElementById(id);
 const val = id => ($(id) ? $(id).value.trim() : '');
-const num = v => (isNaN(parseFloat(v)) || v === '' || v === null || v === undefined ? 0 : parseFloat(v));
+
+// Converte string para número — remove pontos de milhar, troca vírgula por ponto
+function num(v) {
+  if (v === null || v === undefined || v === '') return 0;
+  if (typeof v === 'number') return isNaN(v) ? 0 : v;
+  // Remove espaços e símbolo R$
+  let s = String(v).replace(/\s/g,'').replace('R$','').trim();
+  // Formato brasileiro: 1.234.567,89 → 1234567.89
+  // Se tiver vírgula, é separador decimal brasileiro
+  if (s.includes(',')) {
+    s = s.replace(/\./g,'').replace(',','.');
+  } else {
+    // Sem vírgula: se tiver ponto e mais de 3 dígitos depois, é milhar
+    if ((s.match(/\./g)||[]).length > 1) s = s.replace(/\./g,'');
+  }
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
 
 function fmt(v, d = 2) {
   return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d }).format(num(v));
@@ -48,7 +65,9 @@ function calcTotals(c) {
     const mes = c.meses?.[m] || {};
     totPrev += num(mes.prev); totPago += num(mes.pago); totGlosa += num(mes.glosa);
   });
-  const saldo = num(c.valor_total) > 0 ? num(c.valor_total) - totPago : totPrev - totPago;
+  // Saldo: usa valor_ano se existir, senão valor_total, senão totPrev - totPago
+  const base = num(c.valor_ano) || num(c.valor_total);
+  const saldo = base > 0 ? base - totPago : totPrev - totPago;
   return { totPrev, totPago, totGlosa, saldo };
 }
 
@@ -226,16 +245,16 @@ function clearSearch() {
 function renderForm() {
   $('formTitle').textContent = editingId ? 'Editar Contrato' : 'Novo Contrato';
   const c = editingId ? contracts.find(x => x.id === editingId) : null;
-  if (c) { $('fContrato').value = c.contrato; $('fOS').value = c.os; $('fUnidade').value = c.unidade; $('fAno').value = c.ano; $('fFonte').value = c.fonte; $('fValorTotal').value = c.valor_total || ''; $('fObs').value = c.obs || ''; }
-  else { ['fContrato','fOS','fUnidade','fFonte','fValorTotal','fObs'].forEach(id => { if ($(id)) $(id).value = ''; }); $('fAno').value = new Date().getFullYear(); }
+  if (c) { $('fContrato').value = c.contrato; $('fOS').value = c.os; $('fUnidade').value = c.unidade; $('fAno').value = c.ano; $('fFonte').value = c.fonte; $('fValorTotal').value = c.valor_total ? fmt(c.valor_total) : ''; if ($('fValorAno')) $('fValorAno').value = c.valor_ano ? fmt(c.valor_ano) : ''; $('fObs').value = c.obs || ''; }
+  else { ['fContrato','fOS','fUnidade','fFonte','fValorTotal','fValorAno','fObs'].forEach(id => { if ($(id)) $(id).value = ''; }); $('fAno').value = new Date().getFullYear(); }
   $('monthlyBody').innerHTML = MONTHS.map((m, i) => {
     const mes = c?.meses?.[m] || {};
-    const glosa = num(mes.prev) - num(mes.pago);
+    const glosa = Math.max(0, num(mes.prev) - num(mes.pago));
     return `<tr>
       <td>${MONTH_NAMES[i]}</td>
-      <td><input type="number" id="m_${m}_prev" step="0.01" min="0" value="${mes.prev||''}" placeholder="0,00" oninput="calcGlosaAuto('${m}')" /></td>
-      <td><input type="number" id="m_${m}_pago" step="0.01" min="0" value="${mes.pago||''}" placeholder="0,00" oninput="calcGlosaAuto('${m}')" /></td>
-      <td class="glosa-cell" id="m_${m}_glosa_cell" style="font-family:var(--mono);font-size:0.8rem;color:${glosa > 0 ? 'var(--danger)' : 'var(--text3)'};">${fmtBRL(glosa > 0 ? glosa : 0)}</td>
+      <td><input type="text" id="m_${m}_prev" value="${mes.prev ? fmt(mes.prev) : ''}" placeholder="0,00" oninput="calcGlosaAuto('${m}')" style="text-align:right;font-family:var(--mono);font-size:0.82rem;" /></td>
+      <td><input type="text" id="m_${m}_pago" value="${mes.pago ? fmt(mes.pago) : ''}" placeholder="0,00" oninput="calcGlosaAuto('${m}')" style="text-align:right;font-family:var(--mono);font-size:0.82rem;" /></td>
+      <td class="glosa-cell" id="m_${m}_glosa_cell" style="font-family:var(--mono);font-size:0.82rem;color:${glosa > 0 ? 'var(--danger)' : 'var(--text3)'};">${fmtBRL(glosa)}</td>
     </tr>`;
   }).join('');
   calcMonthlyTotal();
@@ -264,15 +283,19 @@ function calcMonthlyTotal() {
   $('totPago').textContent = fmtBRL(totPago);
   $('totGlosa').textContent = fmtBRL(totGlosa);
 
-  // Saldo do contrato = Valor Total - Total Pago
-  const valorTotal = num($('fValorTotal')?.value);
-  if (valorTotal > 0) {
-    const saldo = valorTotal - totPago;
-    $('saldoContrato').textContent = fmtBRL(saldo);
-    $('saldoContrato').style.color = saldo >= 0 ? 'var(--success)' : 'var(--danger)';
-    $('saldoContratoRow').style.display = '';
-  } else {
-    $('saldoContratoRow').style.display = 'none';
+  // Saldo do contrato = Valor Total do Ano - Total Pago no ano
+  const valorAno = num($('fValorAno')?.value) || num($('fValorTotal')?.value);
+  const rowEl = $('saldoContratoRow');
+  const saldoEl = $('saldoContrato');
+  if (rowEl && saldoEl) {
+    if (valorAno > 0) {
+      const saldo = valorAno - totPago;
+      saldoEl.textContent = fmtBRL(saldo);
+      saldoEl.style.color = saldo >= 0 ? 'var(--success)' : 'var(--danger)';
+      rowEl.style.display = '';
+    } else {
+      rowEl.style.display = 'none';
+    }
   }
 }
 
@@ -286,9 +309,13 @@ async function saveContract() {
     const pago = num($(`m_${m}_pago`)?.value);
     meses[m] = { prev, pago, glosa: Math.max(0, prev - pago) };
   });
-  const $btn = $('saveBtn');
   $btn.disabled = true; $btn.textContent = 'Salvando...';
-  const ok = await saveToFirebase({ contrato, os, unidade, ano, fonte, valor_total: num($('fValorTotal').value) || null, obs: val('fObs'), meses });
+  const ok = await saveToFirebase({ 
+    contrato, os, unidade, ano, fonte, 
+    valor_total: num($('fValorTotal')?.value) || null,
+    valor_ano: num($('fValorAno')?.value) || null,
+    obs: val('fObs'), meses 
+  });
   $btn.disabled = false; $btn.textContent = '💾 Salvar Contrato';
   if (ok) { toast(editingId ? 'Contrato atualizado!' : 'Contrato cadastrado!', 'success'); editingId = null; navigate('contracts'); }
 }
