@@ -1,5 +1,5 @@
 // =============================================
-// ContratosPro v2.1 — Firebase CDN
+// ContratosPro v2.2 — Firebase CDN + Glosa Auto
 // =============================================
 
 'use strict';
