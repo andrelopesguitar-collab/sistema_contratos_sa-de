@@ -207,18 +207,18 @@ function goPage(p) { currentPage = p; renderTable(); window.scrollTo(0,0); }
 
 function searchContracts() {
   const sC = val('sContrato').toLowerCase(), sO = val('sOS').toLowerCase(), sObj = val('sObjeto').toLowerCase();
-  const sA = val('sAno'), sF = val('sFonte'), sVM = num($('sValMin')?.value);
+  const sA = val('sAno'), sF = val('sFonte'), sVM = num($('sValMin')?.value), sSaldo = num($('sSaldo')?.value);
   filtered = contracts.filter(c => {
     const t = calcTotals(c);
     return (!sC || c.contrato.toLowerCase().includes(sC)) && (!sO || c.os.toLowerCase().includes(sO)) &&
            (!sObj || c.unidade.toLowerCase().includes(sObj)) && (!sA || c.ano == sA) &&
-           (!sF || c.fonte === sF) && (!sVM || t.totPago >= sVM);
+           (!sF || c.fonte === sF) && (!sVM || t.totPago >= sVM) && (!sSaldo || t.saldo >= sSaldo);
   });
   renderContracts();
 }
 
 function clearSearch() {
-  ['sContrato','sOS','sObjeto','sAno','sFonte','sValMin'].forEach(id => { if ($(id)) $(id).value = ''; });
+  ['sContrato','sOS','sObjeto','sAno','sFonte','sValMin','sSaldo'].forEach(id => { if ($(id)) $(id).value = ''; });
   filtered = [...contracts]; renderContracts();
 }
 
@@ -230,15 +230,50 @@ function renderForm() {
   else { ['fContrato','fOS','fUnidade','fFonte','fValorTotal','fObs'].forEach(id => { if ($(id)) $(id).value = ''; }); $('fAno').value = new Date().getFullYear(); }
   $('monthlyBody').innerHTML = MONTHS.map((m, i) => {
     const mes = c?.meses?.[m] || {};
-    return `<tr><td>${MONTH_NAMES[i]}</td><td><input type="number" id="m_${m}_prev" step="0.01" min="0" value="${mes.prev||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td><td><input type="number" id="m_${m}_pago" step="0.01" min="0" value="${mes.pago||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td><td><input type="number" id="m_${m}_glosa" step="0.01" min="0" value="${mes.glosa||''}" placeholder="0,00" oninput="calcMonthlyTotal()" /></td></tr>`;
+    const glosa = num(mes.prev) - num(mes.pago);
+    return `<tr>
+      <td>${MONTH_NAMES[i]}</td>
+      <td><input type="number" id="m_${m}_prev" step="0.01" min="0" value="${mes.prev||''}" placeholder="0,00" oninput="calcGlosaAuto('${m}')" /></td>
+      <td><input type="number" id="m_${m}_pago" step="0.01" min="0" value="${mes.pago||''}" placeholder="0,00" oninput="calcGlosaAuto('${m}')" /></td>
+      <td class="glosa-cell" id="m_${m}_glosa_cell" style="font-family:var(--mono);font-size:0.8rem;color:${glosa > 0 ? 'var(--danger)' : 'var(--text3)'};">${fmtBRL(glosa > 0 ? glosa : 0)}</td>
+    </tr>`;
   }).join('');
+  calcMonthlyTotal();
+}
+
+function calcGlosaAuto(m) {
+  const prev = num($(`m_${m}_prev`)?.value);
+  const pago = num($(`m_${m}_pago`)?.value);
+  const glosa = Math.max(0, prev - pago);
+  const cell = $(`m_${m}_glosa_cell`);
+  if (cell) {
+    cell.textContent = fmtBRL(glosa);
+    cell.style.color = glosa > 0 ? 'var(--danger)' : 'var(--text3)';
+  }
   calcMonthlyTotal();
 }
 
 function calcMonthlyTotal() {
   let totPrev = 0, totPago = 0, totGlosa = 0;
-  MONTHS.forEach(m => { totPrev += num($(`m_${m}_prev`)?.value); totPago += num($(`m_${m}_pago`)?.value); totGlosa += num($(`m_${m}_glosa`)?.value); });
-  $('totPrev').textContent = fmtBRL(totPrev); $('totPago').textContent = fmtBRL(totPago); $('totGlosa').textContent = fmtBRL(totGlosa);
+  MONTHS.forEach(m => {
+    const prev = num($(`m_${m}_prev`)?.value);
+    const pago = num($(`m_${m}_pago`)?.value);
+    totPrev += prev; totPago += pago; totGlosa += Math.max(0, prev - pago);
+  });
+  $('totPrev').textContent = fmtBRL(totPrev);
+  $('totPago').textContent = fmtBRL(totPago);
+  $('totGlosa').textContent = fmtBRL(totGlosa);
+
+  // Saldo do contrato = Valor Total - Total Pago
+  const valorTotal = num($('fValorTotal')?.value);
+  if (valorTotal > 0) {
+    const saldo = valorTotal - totPago;
+    $('saldoContrato').textContent = fmtBRL(saldo);
+    $('saldoContrato').style.color = saldo >= 0 ? 'var(--success)' : 'var(--danger)';
+    $('saldoContratoRow').style.display = '';
+  } else {
+    $('saldoContratoRow').style.display = 'none';
+  }
 }
 
 async function saveContract() {
@@ -246,7 +281,11 @@ async function saveContract() {
   const ano = parseInt(val('fAno')) || new Date().getFullYear();
   if (!contrato || !os || !unidade || !fonte) { toast('Preencha os campos obrigatórios!', 'error'); return; }
   const meses = {};
-  MONTHS.forEach(m => { meses[m] = { prev: num($(`m_${m}_prev`)?.value), pago: num($(`m_${m}_pago`)?.value), glosa: num($(`m_${m}_glosa`)?.value) }; });
+  MONTHS.forEach(m => {
+    const prev = num($(`m_${m}_prev`)?.value);
+    const pago = num($(`m_${m}_pago`)?.value);
+    meses[m] = { prev, pago, glosa: Math.max(0, prev - pago) };
+  });
   const $btn = $('saveBtn');
   $btn.disabled = true; $btn.textContent = 'Salvando...';
   const ok = await saveToFirebase({ contrato, os, unidade, ano, fonte, valor_total: num($('fValorTotal').value) || null, obs: val('fObs'), meses });
